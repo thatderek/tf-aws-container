@@ -9,6 +9,70 @@ Do you have a simple application you want to deploy using AWS' ECR but realized 
 
 This module is for you fellow engineer! 
 
+## How to use this
+
+From a terraform file call this module like so could be used to build an AWS Lambda backed by an ECR Container: 
+
+```tf
+module "container" {
+  source    = "git@github.com:thatderek/tf-aws-container.git"     # See note below
+
+  code_path     = "./code"
+  resource_name = "normal-human-webapp"
+
+  aws_ecr_repository_attributes = {
+    force_delete = true
+  }
+}
+
+resource "aws_lambda_function" "webapp" {
+  function_name = "jackie-daytona-ai"
+  role          = aws_iam_role.iam_for_lambda.arn
+
+  # The image_uri here is not very nice to use, this'll be fixed to be less grody when the architecture
+  # is more settled.
+  image = flatten(module.container.aws_imagebuilder_image.output_resources[0].containers[*].image_uris[*])[0]
+}
+
+
+```
+_Note:_ Don't acutally just blindly call this module without pinning to a branch, tag (when I start publishing this properly), or a commit. More instructions on how to do that [here](https://developer.hashicorp.com/terraform/language/modules/sources#selecting-a-revision)
+
+
+There is only one required variable: `code_path`. In it must be a Dockerfile containing the instructions for building your app along with any dependencies otherwise not downloaded via the Dockerfile's instructions. 
+
+From the [examples/go-server](./examples/go-server) example, we see a directory sturcture that looks like: 
+
+```
+➜  go-server git:(main) tree .
+.
+├── code
+│   ├── Dockerfile
+│   ├── go.mod
+│   └── main.go
+└── main.tf
+
+1 directory, 4 files
+➜  go-server git:(main)
+```
+
+So long as the Dockerfile builds when you're executing the `docker build . ` command, it'll probably work remotely with this module too.
+
+If something isn't working, you can set the config for 
+```
+imagebuilder_key_pair_name                 = "TheNameOfYourKeySetInEC2"
+imagebuilder_terminate_instance_on_failure = false
+```
+
+With the name of [your key](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/create-key-pairs.html#how-to-generate-your-own-key-and-import-it-to-aws) and instance termination turned off, the instance will be left online for you to debug whats going on with your build. The places to look are: 
+
+- Look around `/tmp/imagebuilder_service` which is the default directory ImageBuilder does it's work
+- The [command history](https://us-east-1.console.aws.amazon.com/systems-manager/run-command/complete-commands?region=us-east-1) in Systems Manager, the service ImageBuilder uses to run commands on the instance.
+    - Clicking the most recent commands and then further clicking on the `i-instanceId` should bring up boxes showing outputs from the recent commands. 
+- ImageBuilder logs accessible via the [Images](https://us-east-1.console.aws.amazon.com/imagebuilder/home?region=us-east-1#/images) by clicking on the ImageVersion and then clicking on the `Log stream` link in the Summary box.
+
+By default, this module to work in most aws accounts out of the box in regions that support the dependent services (ImageBuilder, Elastic Container Repository, etc) and it is made to not have name conflicts in case of multiple deployments. Some commong first variables to look at will probably be the `resource_name` (so everything is just named `app-[randomString]`) and `subnet_id` (in case you've deleted the default vpc/security-group from the region you're deploying in. 
+
 ## Design Goals
 
 - Be runner agnostic
@@ -58,6 +122,15 @@ Hello from ecs task: Howdy! I'm coming to you from the app-hslhwpv7 task! ┏( �
 ```
 
 And with that, you can now party _all_ the way down with your new ECS Web app. 乁(⪧∀⪦˵ )ㄏ
+
+### Ideas / Goals
+
+Some things I want to see worked out before this gets any real use:
+
+- Supporting ARM container builds
+    - This may not be possible with ImageBuilder or if it is, way complex. This might be reason to rebuild this with [aws_lambda_invocation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_invocation) calling up some Ec2 instances and running Systems Manager documents against them to build the contianer. 
+- Features around how the container is tagged.
+    - Right now everything is just :latest
 
 ## Requirements
 
