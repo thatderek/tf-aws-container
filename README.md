@@ -79,8 +79,6 @@ By default, this module to work in most aws accounts out of the box in regions t
     - Some attempts to do this rely on whatever is running the terraform-apply _also_ having the docker service installed and available to build and push the contianer. That may work in a fair number of cases, but I want this to work everwhere: containers, terraform-cloud, github actions, etc. By limiting the requirements strictly to terraform and a version, we can be sure to not cause runner/builder/ci lock in for what should be a relatively trivial process. 
 - Enable single terraform-apply operations
     - The whole point of this is to avoid the common practice whereby multiple pipelines are required to do simple stuff like building a container backed AWS Lambda or deploy small apps to ECS. Mulitple pipelines, chaining things, and (shudder) manual steps are right out. 
- Mulitple pipelines, chaining things, and (shudder) manual steps are right out. 
-
 
 
 ## Actually, no one should use this (yet)
@@ -109,7 +107,7 @@ Initializing provider plugins...
 aws_ecs_task_definition.app: Creating...
 aws_ecs_task_definition.app: Creation complete after 1s [id=app-hslhwpv7]
 module.ecs_cluster.aws_ecs_service.main: Creating...
-module.ecs_cluster.aws_ecs_service.main: Creation complete after 1s [id=arn:aws:ecs:us-east-1:400575516093:service/app-hslhwpv7/app-hslhwpv7]
+module.ecs_cluster.aws_ecs_service.main: Creation complete after 1s [id=arn:aws:ecs:us-east-1:1234566789:service/app-hslhwpv7/app-hslhwpv7]
 
 Apply complete! Resources: 44 added, 0 changed, 0 destroyed.
 
