@@ -155,7 +155,6 @@ resource "aws_iam_role" "execution" {
       Sid = ""
     }]
   })
-  name = "ecs-task-${var.name}"
 }
 
 output "aws_iam_roles" {

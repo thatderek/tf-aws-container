@@ -1,50 +1,22 @@
-variable "random_suffix" {
-  default     = true
-  type        = bool
-  description = "This appends a random suffix to the resources created by this module. Defaults to true to maintain the ability to apply multiple times in an account."
-}
-
 resource "random_string" "main" {
   length  = 8
   special = false
   upper   = false
 }
 
-variable "resource_name" {
-  default     = "app"
-  type        = string
-  description = "What to name resources deployed by this module. Works in conjunction with `var.random_suffix` bool."
-}
-
 locals {
+  # Builds the name we'll use to label weveyrhting with.
   name = var.random_suffix ? "${var.resource_name}-${random_string.main.result}" : var.resource_name
+
+  # Builds an image tag from a combination of hashes of additional tags and the source code
+  code_hash = filebase64sha256(data.archive_file.code.output_path)
+  tag_hash  = sha256(jsonencode(var.image_tags_additional))
+  image_tag = sha256("${local.code_hash}${local.tag_hash}")
+
+  # Decodes the output of our lambda_invocation for use by the data ecr_image confirming our container
+  # built and is available.
+  aws_lambda_invocation_result = jsondecode(aws_lambda_invocation.main.result)
 }
-
-output "name" {
-  description = "The name used by this module for deployed resources."
-  value       = local.name
-}
-
-variable "aws_ecr_repository_attributes" {
-  description = "The attributes to set on the ECR Repository. This takes a map as it's input and for any attribute not included, the default specified on the [5.43.0](https://registry.terraform.io/providers/hashicorp/aws/5.43.0/docs/resources/ecr_repository) documentation is used."
-
-  type = object({
-    force_delete         = optional(string, false)
-    image_tag_mutability = optional(string, "MUTABLE")
-
-    encryption_configuration = optional(map(any), {
-      encryption_type = "AES256"
-      kms_key         = ""
-    })
-
-    image_scanning_configuration = optional(map(any), {
-      scan_on_push = true
-    })
-
-  })
-  default = {}
-}
-
 
 resource "aws_ecr_repository" "main" {
   name                 = local.name
@@ -61,27 +33,16 @@ resource "aws_ecr_repository" "main" {
   }
 }
 
-output "aws_ecr_repository" {
-  value = aws_ecr_repository.main
-}
-
 data "aws_region" "main" {}
 
-variable "subnet_id" {
-  description = "The subnet id where ImageBuilder should run instances building containers. Note: if left blank, ImageBuilder will attempt to use a subnet in the default VPC."
-  default     = ""
-}
-
 data "aws_subnet" "main" {
-  for_each = var.subnet_id == "" ? [] : toset([var.subnet_id])
-  id       = var.subnet_id
+  id = var.subnet_id
 }
 
 resource "aws_security_group" "main" {
-  for_each = var.subnet_id == "" ? [] : toset([var.subnet_id])
-  name     = "imagebuilder-${local.name}"
+  name = "ecs-builder-${local.name}"
 
-  vpc_id = data.aws_subnet.main[var.subnet_id].vpc_id
+  vpc_id = data.aws_subnet.main.vpc_id
   egress {
     from_port        = 0
     to_port          = 0
@@ -91,48 +52,49 @@ resource "aws_security_group" "main" {
   }
 }
 
-
-resource "aws_imagebuilder_distribution_configuration" "main" {
-  name = local.name
-
-  distribution {
-    region = data.aws_region.main.name
-    container_distribution_configuration {
-      target_repository {
-        repository_name = aws_ecr_repository.main.name
-        service         = "ECR"
-      }
-    }
-  }
-}
-
 resource "aws_s3_bucket" "main" {
-  bucket = local.name
+  bucket        = local.name
+  force_destroy = true
 }
 
-resource "aws_iam_instance_profile" "imagebuilder" {
-  role = aws_iam_role.imagebuilder.name
-}
-
-resource "aws_iam_role" "imagebuilder" {
+resource "aws_iam_role" "ecs_executor" {
+  name = "ecs-executor-${local.name}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Action = "sts:AssumeRole"
       Effect = "Allow"
       Principal = {
-        Service = "ec2.amazonaws.com"
+        Service = "ecs-tasks.amazonaws.com"
       }
     }]
   })
 }
 
-resource "aws_iam_policy" "imagebuilder_code_download" {
+resource "aws_iam_role" "ecs_task" {
+  name = "ecs-task-${local.name}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_policy" "code_download" {
+  name = "code-download-${local.name}"
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Action = ["s3:GetObject"]
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
         Resource = [
           "arn:${data.aws_partition.main.partition}:s3:::${aws_s3_bucket.main.bucket}",
           "arn:${data.aws_partition.main.partition}:s3:::${aws_s3_bucket.main.bucket}/*"
@@ -143,64 +105,68 @@ resource "aws_iam_policy" "imagebuilder_code_download" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "imagebuilder_code_download" {
-  role       = aws_iam_role.imagebuilder.name
-  policy_arn = aws_iam_policy.imagebuilder_code_download.arn
+resource "aws_iam_policy" "ecr" {
+  name = "ecr-${local.name}"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:DescribeRepositories",
+          "ecr:ListTagsForResource",
+        ]
+        Resource = ["*"]
+        Effect   = "Allow"
+      },
+      {
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:GetRepositoryPolicy",
+          "ecr:ListImages",
+          "ecr:DescribeImages",
+          "ecr:BatchGetImage",
+          "ecr:GetLifecyclePolicy",
+          "ecr:GetLifecyclePolicyPreview",
+          "ecr:DescribeImageScanFindings",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImage"
+        ]
+        Resource = [
+          aws_ecr_repository.main.arn
+        ]
+        Effect = "Allow"
+      },
+    ]
+  })
 }
 
-resource "aws_iam_role_policy_attachment" "imagebuilder_ssmmagagedinstancecore" {
-  role       = aws_iam_role.imagebuilder.name
-  policy_arn = "arn:${data.aws_partition.main.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+resource "aws_iam_role_policy_attachment" "ecs_code_download" {
+  role       = aws_iam_role.ecs_task.name
+  policy_arn = aws_iam_policy.code_download.arn
 }
 
-resource "aws_iam_role_policy_attachment" "imagebuilder_ec2instanceprofileforimagebuilder" {
-  role       = aws_iam_role.imagebuilder.name
-  policy_arn = "arn:${data.aws_partition.main.partition}:iam::aws:policy/EC2InstanceProfileForImageBuilder"
+resource "aws_iam_role_policy_attachment" "ecs_ecr" {
+  role       = aws_iam_role.ecs_task.name
+  policy_arn = aws_iam_policy.ecr.arn
 }
 
-resource "aws_iam_role_policy_attachment" "imagebuilder_ec2instanceprofileforimagebuildecrcontainerbuilds" {
-  role       = aws_iam_role.imagebuilder.name
-  policy_arn = "arn:${data.aws_partition.main.partition}:iam::aws:policy/EC2InstanceProfileForImageBuilderECRContainerBuilds"
+data "aws_iam_policy" "AmazonECSTaskExecutionRolePolicy" {
+  arn = "arn:${data.aws_partition.main.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-variable "imagebuilder_terminate_instance_on_failure" {
-  type        = bool
-  description = "Determines whether the underlaying instance is terminated when the build process fails. This is useful for debugging purposes."
-  default     = true
+resource "aws_iam_policy" "ecs_executor" {
+  name   = "ecs-executor-${local.name}"
+  policy = data.aws_iam_policy.AmazonECSTaskExecutionRolePolicy.policy
 }
 
-variable "imagebuilder_key_pair_name" {
-  type        = string
-  description = "The [key-pair name](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/create-key-pairs.html#how-to-generate-your-own-key-and-import-it-to-aws) to start the ImageBuilder instances with. This is useful if you want to debug builds ImageBuilder. See also `imagebuilder_terminate_instance_on_failure` variable."
-  default     = ""
+resource "aws_iam_role_policy_attachment" "ecs_executor" {
+  role       = aws_iam_role.ecs_executor.name
+  policy_arn = aws_iam_policy.ecs_executor.arn
 }
-
-variable "imagebuilder_instance_types" {
-  type        = list(string)
-  description = "The type of instances used to build the the images made by this module. By default, we use compute specialized Graviaton instances."
-  default     = ["c6a.large", "c5a.large"]
-}
-
-resource "aws_imagebuilder_infrastructure_configuration" "main" {
-  name = local.name
-
-  instance_profile_name = aws_iam_instance_profile.imagebuilder.name
-
-  instance_types                = var.imagebuilder_instance_types
-  terminate_instance_on_failure = var.imagebuilder_terminate_instance_on_failure
-  key_pair                      = var.imagebuilder_key_pair_name == "" ? null : var.imagebuilder_key_pair_name
-
-  subnet_id          = var.subnet_id == "" ? null : var.subnet_id
-  security_group_ids = var.subnet_id == "" ? null : [aws_security_group.main[var.subnet_id].id]
-
-  logging {
-    s3_logs {
-      s3_bucket_name = aws_s3_bucket.main.bucket
-      s3_key_prefix  = "imagbuilder_logs/"
-    }
-  }
-}
-
 
 resource "aws_s3_bucket_lifecycle_configuration" "main" {
   bucket = aws_s3_bucket.main.id
@@ -213,257 +179,227 @@ resource "aws_s3_bucket_lifecycle_configuration" "main" {
       days = 365
     }
   }
-
-  # Delete build logs after 90 days
-  rule {
-    id     = "buildLogs"
-    status = "Enabled"
-    expiration {
-      days = 90
-    }
-    filter {
-      prefix = "imagebuilder_logs/"
-    }
-  }
-
-}
-
-variable "code_path" {
-  description = "The path where the code for this project lives. _Note: The folder must contain, minimally, a Dockefile at the root."
-  type        = string
 }
 
 data "archive_file" "code" {
   type        = "zip"
   source_dir  = var.code_path
-  output_path = "code.zip"
+  output_path = "${path.module}/code.zip"
 }
 
 resource "aws_s3_object" "code" {
   bucket      = aws_s3_bucket.main.bucket
-  key         = "code.zip"
+  key         = "${filemd5(data.archive_file.code.output_path)}.zip"
   source      = data.archive_file.code.output_path
   source_hash = filemd5(data.archive_file.code.output_path)
-}
-
-resource "aws_imagebuilder_component" "code_download" {
-  data = yamlencode({
-    phases = [{
-      name = "build"
-      steps = [{
-        action = "ExecuteBash"
-        inputs = {
-          commands = [
-            "aws s3 cp s3://${aws_s3_bucket.main.bucket}/${aws_s3_object.code.key} .",
-            "unzip ${aws_s3_object.code.key}",
-            "cd ${trimsuffix(aws_s3_object.code.key, ".zip")}"
-          ]
-        }
-        name      = "${local.name}-code_download"
-        onFailure = "Abort"
-      }]
-    }]
-    schemaVersion = 1.0
-  })
-  name     = "${local.name}-code_download"
-  platform = "Linux"
-  version  = "1.0.0"
-}
-
-locals {
-  imagebuilder_working_directory = "/tmp/imagebuilder_service"
-}
-
-resource "aws_ssm_document" "main" {
-  name            = "app_download_${local.name}"
-  document_format = "YAML"
-  document_type   = "Command"
-
-  # It appears imagebuilder's createImage command fails when running the SendCommand action
-  # against an SSM Doc that doesn't have `parameters` set. So this is a placeholder to keep
-  # things working until either that's fixed or my error in understanding what I'm seeing
-  # is sorted. ( ˘︹˘ )
-  content = <<DOC
-schemaVersion: '1.2'
-description: Downloads code for ${local.name}
-parameters:
-  foo:
-    type: String
-    default: bar
-runtimeConfig:
-  'aws:runShellScript':
-    properties:
-      - id: '0.aws:runShellScript'
-        runCommand:
-          - aws s3 cp s3://${aws_s3_bucket.main.bucket}/${aws_s3_object.code.key} /tmp/
-          - mkdir -p ${local.imagebuilder_working_directory}
-          - unzip /tmp/${aws_s3_object.code.key} -d ${local.imagebuilder_working_directory}
-DOC
-
-}
-
-resource "aws_imagebuilder_container_recipe" "main" {
-  name    = join("-", [local.name, substr(aws_s3_object.code.source_hash, 0, 8)])
-  version = "1.0.0"
-
-  container_type = "DOCKER"
-  parent_image   = "arn:${data.aws_partition.main.partition}:imagebuilder:${data.aws_region.main.name}:aws:image/amazon-linux-x86-latest/x.x.x"
-
-  working_directory = "/tmp/" # ImageBuilder cds into `/${working_directory}/imagebuilder_service
-
-  target_repository {
-    repository_name = aws_ecr_repository.main.name
-    service         = "ECR"
-  }
-
-  component {
-    component_arn = aws_imagebuilder_component.code_download.arn
-  }
-
-  dockerfile_template_data = templatefile("${var.code_path}/Dockerfile",
-    { code_location = "${aws_s3_bucket.main.bucket}/${aws_s3_object.code.key}" }
-  )
 }
 
 data "aws_caller_identity" "main" {}
 
 data "aws_partition" "main" {}
 
-resource "aws_iam_role" "imagebuilder_execute" {
+resource "aws_cloudwatch_log_group" "main" {
+  name = "builder-${local.name}"
+}
+resource "aws_ecs_cluster" "main" {
+  name = "builder-${local.name}"
+
+  configuration {
+    execute_command_configuration {
+      logging = "OVERRIDE"
+      log_configuration {
+        cloud_watch_log_group_name = aws_cloudwatch_log_group.main.name
+      }
+    }
+  }
+}
+
+resource "aws_ecs_cluster_capacity_providers" "main" {
+  cluster_name = aws_ecs_cluster.main.name
+
+  capacity_providers = ["FARGATE"]
+
+  default_capacity_provider_strategy {
+    base              = 1
+    weight            = 100
+    capacity_provider = "FARGATE"
+  }
+}
+
+resource "aws_ecs_task_definition" "main" {
+  family = "builder-${local.name}"
+
+  execution_role_arn = aws_iam_role.ecs_executor.arn
+  task_role_arn      = aws_iam_role.ecs_task.arn
+
+  network_mode = "awsvpc"
+
+  cpu    = 4096
+  memory = 16384
+
+  requires_compatibilities = ["FARGATE"]
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = var.cpu_architecture
+  }
+
+  container_definitions = jsonencode([
+    {
+      name   = "kaniko"
+      image  = "gcr.io/kaniko-project/executor:latest"
+      cpu    = 4096  # Provisioning this gratuitously but open to making these 
+      memory = 16384 # vars if our Windows friends need it
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.main.name
+          "awslogs-region"        = data.aws_region.main.name
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_iam_role" "lambda" {
+  name = "lambda-${local.name}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Action = "sts:AssumeRole"
       Effect = "Allow"
       Principal = {
-        Service = "imagebuilder.${data.aws_partition.main.dns_suffix}"
+        Service = "lambda.amazonaws.com"
       }
-      Sid = ""
     }]
   })
-  name = "imagebuilder-${local.name}"
 }
 
-data "aws_iam_policy" "AWSServiceRoleForImageBuilder" {
-  arn = "arn:${data.aws_partition.main.partition}:iam::aws:policy/aws-service-role/AWSServiceRoleForImageBuilder"
-}
-
-resource "aws_iam_policy" "imagebuilder_service_policy_basic" {
-  name   = "imagebuilder-execute-basic-${local.name}"
-  policy = data.aws_iam_policy.AWSServiceRoleForImageBuilder.policy
-}
-
-resource "aws_iam_role_policy_attachment" "test_execute_service_basic" {
-  policy_arn = aws_iam_policy.imagebuilder_service_policy_basic.arn
-  role       = aws_iam_role.imagebuilder_execute.name
-}
-
-resource "aws_iam_policy" "imagebuilder_service_policy_extended" {
-  name = "imagebuilder-execute-extended-${local.name}"
+resource "aws_iam_policy" "lambda" {
+  name = "lambda-${local.name}"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Action = "ssm:SendCommand"
-      Effect = "Allow"
-      Resource = [
-        "arn:${data.aws_partition.main.partition}:ssm:${data.aws_region.main.id}::document/AWS-UpdateSSMAgent",
-        aws_ssm_document.main.arn,
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = ["${aws_cloudwatch_log_group.main.arn}:*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecs:RunTask"]
+        Resource = [aws_ecs_task_definition.main.arn]
+      },
+      {
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
+        Resource = [
+          aws_iam_role.ecs_executor.arn,
+          aws_iam_role.ecs_task.arn
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeTasks"]
+        Resource = ["*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:DescribeImages"]
+        Resource = [aws_ecr_repository.main.arn]
+      }
+    ]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "test_execute_service_extended" {
-  policy_arn = aws_iam_policy.imagebuilder_service_policy_extended.arn
-  role       = aws_iam_role.imagebuilder_execute.name
+resource "aws_iam_role_policy_attachment" "lambda_lambda" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = aws_iam_policy.lambda.arn
 }
 
-resource "aws_imagebuilder_image" "main" {
-  infrastructure_configuration_arn = aws_imagebuilder_infrastructure_configuration.main.arn
-  distribution_configuration_arn   = aws_imagebuilder_distribution_configuration.main.arn
-  container_recipe_arn             = aws_imagebuilder_container_recipe.main.arn
+resource "aws_iam_role_policy_attachment" "lambda_s3" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = aws_iam_policy.code_download.arn
+}
 
-  execution_role = aws_iam_role.imagebuilder_execute.arn
+data "archive_file" "lambda" {
+  type        = "zip"
+  output_path = "${path.module}/lambda_controller.zip"
+  source_file = "${path.module}/lambda_controller.py"
+}
 
-  workflow {
-    workflow_arn = aws_imagebuilder_workflow.main.arn
+resource "aws_lambda_function" "main" {
+  function_name = "builder-${local.name}"
+  role          = aws_iam_role.lambda.arn
+
+  architectures = ["arm64"]
+  runtime       = "python3.12"
+  handler       = "lambda_controller.lambda_handler"
+  memory_size   = 256
+  timeout       = 900
+
+  filename         = data.archive_file.lambda.output_path
+  package_type     = "Zip"
+  source_code_hash = filebase64sha256(data.archive_file.lambda.output_path)
+
+  ephemeral_storage {
+    size = var.lambda_ephemeral_storage_mb
   }
 
-  workflow {
-    workflow_arn = "arn:${data.aws_partition.main.partition}:imagebuilder:${data.aws_region.main.id}:aws:workflow/distribution/distribute-container/x.x.x"
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.main.name
   }
 
   depends_on = [
-    aws_s3_object.code,
-    aws_iam_role_policy_attachment.test_execute_service_basic,
-    aws_iam_role_policy_attachment.test_execute_service_extended
+    aws_iam_role_policy_attachment.lambda_lambda,
+    aws_iam_role_policy_attachment.lambda_s3
   ]
 
-  lifecycle {
-    ignore_changes = [
-      workflow
-    ]
+}
+
+resource "aws_lambda_invocation" "main" {
+  function_name = aws_lambda_function.main.function_name
+
+  input = jsonencode({
+    repo_name             = aws_ecr_repository.main.name
+    s3_bucket             = aws_s3_bucket.main.id
+    cluster_name          = aws_ecs_cluster.main.name
+    task_definition_arn   = aws_ecs_task_definition.main.arn
+    image_tag             = local.image_tag
+    image_tags_additional = var.image_tags_additional
+    repository_uri        = aws_ecr_repository.main.repository_url
+    code_location         = aws_s3_object.code.key
+    subnet_id             = var.subnet_id
+    security_group_id     = aws_security_group.main.id
+  })
+
+  triggers = {
+    redeployment = aws_lambda_function.main.last_modified
   }
 
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_lambda,
+    aws_iam_role_policy_attachment.lambda_s3,
+    aws_iam_policy.lambda,
+    aws_lambda_function.main
+  ]
 }
 
-output "aws_imagebuilder_image" {
-  description = "Information about the image built by this module."
-  value       = aws_imagebuilder_image.main
-}
-
-resource "aws_imagebuilder_workflow" "main" {
-  name    = local.name
-  version = "1.0.0"
-  type    = "BUILD"
-
-  data = <<-EOT
-name: build-container
-description: Workflow to build a container image
-schemaVersion: 1.0
-
-steps:
-  - name: LaunchBuildInstance
-    action: LaunchInstance
-    onFailure: Abort
-    inputs:
-      waitFor: "ssmAgent"
-
-  - name: BootstrapBuildInstance
-    action: BootstrapInstanceForContainer
-    onFailure: Abort
-    if:
-      stringEquals: "DOCKER"
-      value: "$.imagebuilder.imageType"
-    inputs:
-      instanceId.$: "$.stepOutputs.LaunchBuildInstance.instanceId"
-
-  - name: RunCommandDoc
-    action: RunCommand
-    onFailure: Abort
-    inputs:
-      documentName: "${aws_ssm_document.main.name}"
-      instanceId.$: "$.stepOutputs.LaunchBuildInstance.instanceId"
-      parameters:
-        foo:
-          - bar
-
-  - name: ApplyBuildComponents
-    action: ExecuteComponents
-    onFailure: Abort
-    inputs:
-      instanceId.$: "$.stepOutputs.LaunchBuildInstance.instanceId"
-
-outputs:
-  - name: "InstanceId"
-    value: "$.stepOutputs.LaunchBuildInstance.instanceId"
-  EOT
+data "aws_ecr_image" "main" {
+  repository_name = local.aws_lambda_invocation_result["repositoryName"]
+  image_tag       = local.aws_lambda_invocation_result["imageTag"]
+  image_digest    = local.aws_lambda_invocation_result["imageDigest"]
 }
 
 terraform {
   required_providers {
     aws = {
-      version = ">= 5.46.0"
+      version = ">= 5.46.0" # TODO: Figure out how far back this can go
     }
   }
 }

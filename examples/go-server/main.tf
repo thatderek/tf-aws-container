@@ -2,9 +2,13 @@ module "main" {
   source    = "../../"
   code_path = "./code"
 
+  image_tags_additional = ["latest"]
+
   aws_ecr_repository_attributes = {
     force_delete = true
   }
+
+  subnet_id = module.vpc.aws_subnets[0].id
 }
 
 module "vpc" {
@@ -29,7 +33,7 @@ resource "aws_ecs_task_definition" "app" {
   container_definitions = jsonencode([
     {
       name      = module.main.name
-      image     = flatten(module.main.aws_imagebuilder_image.output_resources[0].containers[*].image_uris[*])[0]
+      image     = module.main.aws_ecr_image.image_uri
       cpu       = 1024
       memory    = 2048
       essential = true
