@@ -5,7 +5,7 @@ resource "random_string" "main" {
 }
 
 locals {
-  # Builds the name we'll use to label weveyrhting with.
+  # Builds the name we'll use to label everything with
   name = var.random_suffix ? "${var.resource_name}-${random_string.main.result}" : var.resource_name
 
   # Builds an image tag from a combination of hashes of additional tags and the source code

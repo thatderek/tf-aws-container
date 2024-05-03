@@ -29,7 +29,7 @@ Some cool stuff it can do:
 
 ## How to use this
 
-From a terraform file call this module like so could be used to build an AWS Lambda backed by an ECR Container: 
+From a terraform file call this module to build an AWS Lambda backed by an ECR Container: 
 
 ```tf
 module "container" {
@@ -96,7 +96,7 @@ By default, this module to work in most aws accounts out of the box in regions t
     - Want an ARM container? Want some Windows .net stuff? We got you! Check out the variables documentation.
     - Want your own image tags. We got you too! (All in the vars.)
 - Keep it limited
-    - This isn't really a trivial module; there's a lot of stuff going on in the background. However, as much as is going on, the code and features are really limited to answering the question: how can we get a container built in AWS and put in ECR. Accordingly, the features are mostly limited to answering that question as concisely as is reasonable. There are no assumptions as to how you're going to use the container (eg, if this is heading to Lambda, EKS, etc); it doesn't comes with pre-built integrations into other AWS services (but hopefully it's possible, using outputs to do whatever you can think up). This module should work well with other modules; but the goal is to have it be small and independent from anything else.
+    - This isn't really a trivial module; there's a lot of stuff going on in the background. However, as much as is going on, the code and features are really limited to answering the question: how can we get a container built in AWS and put in ECR. Accordingly, the features are mostly limited to answering that question as concisely as is reasonable. There are no assumptions as to how you're going to use the container (eg, if this is heading to Lambda, EKS, etc); it doesn't come with pre-built integrations into other AWS services (but hopefully it's possible, using outputs to do whatever you can think up). This module should work well with other modules; but the goal is to have it be small and independent from anything else.
 
 
 ## Examples

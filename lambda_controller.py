@@ -152,8 +152,7 @@ def run_build_task(task_definition_arn, cluster_name, subnet_id, security_group_
 
 
 def container_waiter(task_arn, cluster_name, repository_name, image_tag, context):
-    """
-    Waits for a container with a tag to show up in ECR
+    """Waits for a container with a tag to show up in ECR
 
     This function queries an ECS task for completion and then when that is
     done, queires an ECR repository for the existance of an image with a
@@ -215,8 +214,7 @@ def container_waiter(task_arn, cluster_name, repository_name, image_tag, context
 
 
 def lambda_handler(event, context):
-    """
-    The main controller invoked by lambda to build containers!
+    """The main controller invoked by lambda to build containers!
 
     This handler is invoked by lambda to build containers in ECS using Kaniko.
     It takes an event with the keys specified immediately below and an AWS
