@@ -7,15 +7,13 @@ ecr = boto3.client('ecr')
 s3 = boto3.client('s3')
 ecs = boto3.client('ecs')
 
-def container_exists(ecr_name, tag):
+def get_container_details(ecr_name, tag):
     """ A function for searching for a container image in ECR
 
-    This function returns a bool and a reponse object describing the result of
-    a search of ECR for a container image with a specific tag in ECR. It
-    returns a tuple of a bool  describing if the image was found and a response
-    object from the AWS api.
+    This function returns an object describing a the details of a container in
+    ECR, or barring finding such a container, a None object.
     """
-    print('container_exists() is checking on: ', ecr_name, tag)
+    print('get_container_details() is checking on: ', ecr_name, tag)
     try:
         response = ecr.describe_images(
             repositoryName = ecr_name,
@@ -25,19 +23,16 @@ def container_exists(ecr_name, tag):
                 }
             ]
         )
-    except ClientError as error:
-        print("container_exists() had an error: " , error)
-        return False, error.response['Error']['Code']
+    except ecr.exceptions.ImageNotFoundException:
+        return None
+    except ClientError as e:
+        print("get_container_details() had an error: " , e)
+        raise e
 
-    print("container_exists() reponse: ", response)
+    print("get_container_details() reponse: ", response)
 
-    if len(response['imageDetails']) == 0:
-        print("container_exists() called worked but returned 0 results: ",
-              response)
-        return False, "The search worked but didn't turn up a container."
-
-    print('container_exists() found the container: ', ecr_name, tag)
-    return True, response
+    print('get_container_details() found the container: ', ecr_name, tag)
+    return response['imageDetails'][0]
 
 
 def move_code(s3_bucket, code_location):
@@ -56,8 +51,7 @@ def move_code(s3_bucket, code_location):
     So, this function is a bit of a patch fix to make that tar.gz available for
     the kaniko runner in ECS.
 
-    It's output will be a tuple of a bool (describing whether the operation was
-    succesful) and --when successful-- the s3 file location.
+    It's output will a string of the S3 file location.
     """
 
     print('move_code() is starting for: ', s3_bucket, code_location)
@@ -91,18 +85,19 @@ def move_code(s3_bucket, code_location):
         response = s3.upload_file(tar_location, s3_bucket, tar_file)
     except ClientError as e:
         print('move_code() ClientError: ', e)
-        return False, e
+        raise e
 
     # If everything worked, return true and the location of the tar-file in s3
     print('move_code() success')
-    return True, 's3://'+s3_bucket+'/'+tar_file
+    return 's3://'+s3_bucket+'/'+tar_file
 
 
 def run_build_task(task_definition_arn, cluster_name, subnet_id, security_group_id,
                     s3_code_path, repository_uri, image_tag, image_tags_additional):
     """ Runs the kaniko task in ECS
 
-    This function instructs ECS to run the Kaniko task building our container.
+    This function instructs ECS to run the Kaniko task building our container
+    and returns the task-id.
     """
 
     # Build command parameter
@@ -143,12 +138,12 @@ def run_build_task(task_definition_arn, cluster_name, subnet_id, security_group_
         )
     except ClientError as e:
         print('run_task() ClientError: ', e)
-        return False, e
+        raise e
 
     task_arn = response['tasks'][0]['taskArn']
 
     print('run_task() success: ', task_arn)
-    return True, task_arn
+    return task_arn
 
 
 def container_waiter(task_arn, cluster_name, repository_name, image_tag, context):
@@ -156,8 +151,8 @@ def container_waiter(task_arn, cluster_name, repository_name, image_tag, context
 
     This function queries an ECS task for completion and then when that is
     done, queires an ECR repository for the existance of an image with a
-    specific tag. Returns true if it shows up before the lambda runs out of
-    time and false if otherwise.
+    specific tag. Returns True if it shows up before the lambda runs out of
+    time and False if otherwise.
     """
 
     print('container_waiter() started')
@@ -201,16 +196,16 @@ def container_waiter(task_arn, cluster_name, repository_name, image_tag, context
 
         # Get image information seeing if a response shows up, continuing the
         # loop if it doesn't
-        container_exists_result = container_exists(repository_name, image_tag)
-        if container_exists_result[0] == True:
+        container_details = get_container_details(repository_name, image_tag)
+        if container_details != None:
             print('conatiner_waiter() success!')
-            return True, ""
+            return True
 
-    # If we've exted the loop, the image hasn't shown up in the allotted time.
+    # If we've exited the loop, the image hasn't shown up in the allotted time.
     error = ('The image hasn\'t shown up in the allotted time. Check to see if'+
     'the lambda needs to be extended or if the container build errored.')
     print('container_waiter() failure: ' + error)
-    return False, error
+    return False
 
 
 def lambda_handler(event, context):
@@ -242,60 +237,48 @@ def lambda_handler(event, context):
 
 
     # Quick check to see if the container already exists before building it
-    container_exists_result = container_exists(repository_name, image_tag)
-    if container_exists_result[0] == True:
-        container = container_exists_result[1]['imageDetails'][0]
+    container_details = get_container_details(repository_name, image_tag)
+    if container_details != None:
         print("Container found before building, so exiting cleanly.")
         return {
             'statusCode': 200,
-            'repositoryName': container['repositoryName'],
-            'imageTag': container['imageTags'][0],
-            'imageDigest': container['imageDigest'],
+            'repositoryName': container_details['repositoryName'],
+            'imageTag': container_details['imageTags'][0],
+            'imageDigest': container_details['imageDigest'],
         }
 
     # Get zip archive from S3 and remake it into a .tar.gz that kaiko can use
-    move_code_result = move_code(s3_bucket, code_location)
-    if move_code_result[0] == False:
-        raise Exception("Error moving code: {}".format(move_code_result[1]))
-    s3_tar_path = move_code_result[1]
+    s3_tar_path = move_code(s3_bucket, code_location)
 
     # Run the Kaniko task definition in ECS
-    run_build_task_result = run_build_task(
+    task_arn = run_build_task(
         task_definition_arn, cluster_name, subnet_id, security_group_id,
         s3_tar_path, repository_uri, image_tag, image_tags_additional
     )
-    if run_build_task_result[0] == False:
-        raise Exception("Error running task to build container: {}".format(
-            run_build_task_result[1])
-        )
-
-    # Grab the task arn / id 
-    task_arn = run_build_task_result[1]
 
     # Watch the task for completion before the lambda exits
     container_waiter_result = container_waiter(
         task_arn, cluster_name, repository_name, image_tag, context
     )
 
-    if container_waiter_result[0] == False:
-        print("Error getting container details: ", container_waiter_result[1])
+    if container_waiter_result == False:
+        print("Error getting container details: ", container_waiter_result)
         # Intentionally continuing to check to for the container anyways so not
         # exiting script.
 
     # Check to see the container details exist in the ECR Repository
-    container_exists_result = container_exists(repository_name, image_tag)
-    if container_exists_result[0] == False:
+    container_details = get_container_details(repository_name, image_tag)
+    if container_details == None:
         raise Exception("Contianer_exists check failed: {}".format(
-            container_exists_result[1])
+            container_details)
         )
 
     print("Container found. Exiting cleanly! („• ֊ •„)")
-    container = container_exists_result[1]['imageDetails'][0]
     return {
         'statusCode': 200,
-        'repositoryName': container['repositoryName'],
-        'imageTag': container['imageTags'][0],
-        'imageDigest': container['imageDigest'],
+        'repositoryName': container_details['repositoryName'],
+        'imageTag': container_details['imageTags'][0],
+        'imageDigest': container_details['imageDigest'],
     }
 
 if __name__ == "__main__":
