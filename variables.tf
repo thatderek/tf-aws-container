@@ -10,7 +10,7 @@ variable "resource_name" {
 }
 
 variable "aws_ecr_repository_attributes" {
-  description = "The attributes to set on the ECR Repository. This takes a map as it's input and for any attribute not included, the default specified on the [5.43.0](https://registry.terraform.io/providers/hashicorp/aws/5.43.0/docs/resources/ecr_repository) documentation is used."
+  description = "The attributes to set on the ECR Repository. This takes a map as its input and for any attribute not included, the default specified on the [5.43.0](https://registry.terraform.io/providers/hashicorp/aws/5.43.0/docs/resources/ecr_repository) documentation is used."
 
   type = object({
     force_delete         = optional(string, false)
@@ -35,7 +35,7 @@ variable "subnet_id" {
 }
 
 variable "code_path" {
-  description = "The path where the code for this project lives. _Note: The folder must contain, minimally, a Dockefile at the root."
+  description = "The path where the code for this project lives. _Note: The folder must contain, minimally, a Dockerfile at the root."
   type        = string
 }
 
@@ -50,7 +50,7 @@ variable "cpu_architecture" {
 
 
 variable "operating_system_family" {
-  description = "The Operating System family to be used by ECS to build this container. Must be on of those listed [here](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#runtime-platform) for Fargate."
+  description = "The Operating System family to be used by ECS to build this container. Must be one of those listed [here](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#runtime-platform) for Fargate."
   default     = "LINUX"
   validation {
     condition = contains([

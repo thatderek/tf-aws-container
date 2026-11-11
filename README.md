@@ -1,12 +1,11 @@
 # tf-aws-container
 
-A Terraform module creating an AWS Elastic Container Repository and builds the container -- all in the cloud, and in single apply! ٩(˘◡˘)۶  
+A Terraform module that creates an AWS Elastic Container Repository and builds the container -- all in the cloud, and in single apply! ٩(˘◡˘)۶  
 
 
 ## Who should use this?
 
-Do you have a simple application you want to deploy using AWS' ECR but realized it's a somewhat disjointed process? Did you get pumped about deploying containerized Lambdas, only to realize the `createLambda` call [requires the conatiner](https://docs.aws.amazon.com/lambda/latest/api/API_FunctionCode.html#:~:text=Contents-,ImageUri,-URI%20of%
-) already exist in ECR, and so now you have multiple pipelines to deploy your 30 lines of code application?
+Do you have a simple application you want to deploy using AWS' ECR but realized it's a somewhat disjointed process? Did you get pumped about deploying containerized Lambdas, only to realize the `createLambda` call [requires the container](https://docs.aws.amazon.com/lambda/latest/api/API_FunctionCode.html#:~:text=Contents-,ImageUri,-URI%20of) already exist in ECR, and so now you have multiple pipelines to deploy your 30 lines of code application?
 
 This module is for you fellow engineer! 
 
@@ -20,7 +19,7 @@ Some cool stuff it can do:
 - Name-safety / scalability
     - By default, you can deploy this module over and over and it won't collide into preexisting S3 bucket names, IAM Policy names, etc.
 - Secure
-    - IAM Permissions are pretty locked down and this module doesn't appear to have permissions to anything that isn't absolutely necessary. If you do see something that can be locked down further, please don't hestiate to raise a PR!
+    - IAM Permissions are pretty locked down and this module doesn't appear to have permissions to anything that isn't absolutely necessary. If you do see something that can be locked down further, please don't hesitate to raise a PR!
 - Fine grained control of the ECR Repository via the [aws_ecr_repository_attributes](#input_aws_ecr_repository_attributes) variable
 - The ability to build containers for either `X86_64` or `ARM` platforms via [cpu_architecture](#input_cpu_architecture)
 - Windows containers via [operating_system_family](#input_operating_system_family)
@@ -48,19 +47,20 @@ resource "aws_lambda_function" "webapp" {
   function_name = "jackie-daytona-ai"
   role          = aws_iam_role.iam_for_lambda.arn
 
-  image = module.container.aws_ecr_image.image_uri
+  package_type = "Image"
+  image_uri    = module.container.aws_ecr_image.image_uri
 }
 
 
 ```
-_Note:_ Don't acutally just blindly call this module without pinning to a branch, tag (when I start publishing this properly), or a commit. More instructions on how to do that [here](https://developer.hashicorp.com/terraform/language/modules/sources#selecting-a-revision).
+_Note:_ Don't actually just blindly call this module without pinning to a branch, tag (when I start publishing this properly), or a commit. More instructions on how to do that [here](https://developer.hashicorp.com/terraform/language/modules/sources#selecting-a-revision).
 
 
 One of the two required variables is `subnet_id` delineating where ECS will deploy a task to build a container. The current version of this requires access to the Kaniko repo in docker hub and so requires internet access.
 
 The other required variable is `code_path`. In it must be a Dockerfile containing the instructions for building your app along with any dependencies otherwise not downloaded via the Dockerfile's instructions. 
 
-From the [examples/go-server](./examples/go-server) example, we see a directory sturcture that looks like: 
+From the [examples/go-server](./examples/go-server) example, we see a directory structure that looks like: 
 
 ```bash
 ➜  go-server git:(main) tree .
@@ -79,15 +79,15 @@ So long as the Dockerfile builds when you're executing the `docker build . ` com
 
 If something isn't working, you can check out logs for both the controller lambda function and the ecs/kaniko logs in cloudwatch logs at the CloudWatch Log Group created by this module (accessible via the [aws_cloudwatch_log_group](#output_aws_cloudwatch_log_group) output details).
 
-By default, this module to work in most aws accounts out of the box in regions that support the dependent services (Elastic Container Repository, ECS, Lambda, etc) and it is made to not have name conflicts in case of multiple deployments. Some common first variables to look at will probably be the `resource_name` (so everything is just named `app-[randomString]`) and `aws_ecr_repository_attributes` (allowing finer grain control of the ECR repository options).
+By default, this module should work in most AWS accounts out of the box in regions that support the dependent services (Elastic Container Repository, ECS, Lambda, etc) and it is made to not have name conflicts in case of multiple deployments. Some common first variables to look at will probably be the `resource_name` (so everything is just named `app-[randomString]`) and `aws_ecr_repository_attributes` (allowing finer grain control of the ECR repository options).
 
 
 ## Design Goals
 
 - Be runner agnostic
-    - Some attempts to do this rely on whatever is running the terraform-apply _also_ having the docker service installed and available to build and push the container. That may work in a fair number of cases, but I want this to work everwhere: containers, terraform-cloud, github actions, etc. By limiting the requirements strictly to terraform and a version, we can be sure to not cause runner/builder/ci lock in for what should be a relatively trivial process. 
+    - Some attempts to do this rely on whatever is running the terraform-apply _also_ having the docker service installed and available to build and push the container. That may work in a fair number of cases, but I want this to work everywhere: containers, terraform-cloud, github actions, etc. By limiting the requirements strictly to terraform and a version, we can be sure to not cause runner/builder/ci lock in for what should be a relatively trivial process. 
 - Enable single terraform-apply operations
-    - The whole point of this is to avoid the common practice whereby multiple pipelines are required to do simple stuff like building a container backed AWS Lambda or deploy small apps to ECS. Mulitple pipelines, chaining things, and (shudder) manual steps are right out. 
+    - The whole point of this is to avoid the common practice whereby multiple pipelines are required to do simple stuff like building a container backed AWS Lambda or deploy small apps to ECS. Multiple pipelines, chaining things, and (shudder) manual steps are right out. 
 - Be quick
     - An earlier version of this ran with ImageBuilder but that process was slow: even simple container builds took 10+ minutes whereas the Lambda/ECS version takes just under 1 minute.
 - Be smart
@@ -101,11 +101,11 @@ By default, this module to work in most aws accounts out of the box in regions t
 
 ## Examples
 
-If you want to check out the [examples/](./examples) folder, I'm putting demos in there to show what kind of functionality I'm aiming to build. Careful, they do use AWS serivces so there's _some_ cost but it should be negligable.
+If you want to check out the [examples/](./examples) folder, I'm putting demos in there to show what kind of functionality I'm aiming to build. Careful, they do use AWS services so there's _some_ cost but it should be negligible.
 
 ### [go-server](./examples/go-server) example
 
-This shows how, with a dockerfile and a folder of uncompiled go-code, this module can build a container remotely, store it in ecr, and make it available for use by an ECS Task Definition running behind a load balancer. Navigate over to that directory and run `teraform init && terraform apply` and about 5-6 minutes later, it will pop out a `endpoint` output where you can check out the compiled go http server running. 
+This shows how, with a dockerfile and a folder of uncompiled go-code, this module can build a container remotely, store it in ecr, and make it available for use by an ECS Task Definition running behind a load balancer. Navigate over to that directory and run `terraform init && terraform apply` and about 5-6 minutes later, it will pop out a `endpoint` output where you can check out the compiled go http server running. 
 
 ```bash
 ➜  go-server git:(main) ✗ terraform init && terraform apply --auto-approve
@@ -207,6 +207,7 @@ No modules.
 | [aws_ecs_cluster_capacity_providers.main](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecs_cluster_capacity_providers) | resource |
 | [aws_ecs_task_definition.main](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecs_task_definition) | resource |
 | [aws_iam_policy.code_download](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
+| [aws_iam_policy.ecr](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
 | [aws_iam_policy.ecs_executor](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
 | [aws_iam_policy.lambda](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
 | [aws_iam_role.ecs_executor](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
@@ -237,12 +238,12 @@ No modules.
 
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
-| <a name="input_aws_ecr_repository_attributes"></a> [aws\_ecr\_repository\_attributes](#input\_aws\_ecr\_repository\_attributes) | The attributes to set on the ECR Repository. This takes a map as it's input and for any attribute not included, the default specified on the [5.43.0](https://registry.terraform.io/providers/hashicorp/aws/5.43.0/docs/resources/ecr_repository) documentation is used. | <pre>object({<br>    force_delete         = optional(string, false)<br>    image_tag_mutability = optional(string, "MUTABLE")<br><br>    encryption_configuration = optional(map(any), {<br>      encryption_type = "AES256"<br>      kms_key         = ""<br>    })<br><br>    image_scanning_configuration = optional(map(any), {<br>      scan_on_push = true<br>    })<br><br>  })</pre> | `{}` | no |
-| <a name="input_code_path"></a> [code\_path](#input\_code\_path) | The path where the code for this project lives. \_Note: The folder must contain, minimally, a Dockefile at the root. | `string` | n/a | yes |
+| <a name="input_aws_ecr_repository_attributes"></a> [aws\_ecr\_repository\_attributes](#input\_aws\_ecr\_repository\_attributes) | The attributes to set on the ECR Repository. This takes a map as its input and for any attribute not included, the default specified on the [5.43.0](https://registry.terraform.io/providers/hashicorp/aws/5.43.0/docs/resources/ecr_repository) documentation is used. | <pre>object({<br/>    force_delete         = optional(string, false)<br/>    image_tag_mutability = optional(string, "MUTABLE")<br/><br/>    encryption_configuration = optional(map(any), {<br/>      encryption_type = "AES256"<br/>      kms_key         = ""<br/>    })<br/><br/>    image_scanning_configuration = optional(map(any), {<br/>      scan_on_push = true<br/>    })<br/><br/>  })</pre> | `{}` | no |
+| <a name="input_code_path"></a> [code\_path](#input\_code\_path) | The path where the code for this project lives. \_Note: The folder must contain, minimally, a Dockerfile at the root. | `string` | n/a | yes |
 | <a name="input_cpu_architecture"></a> [cpu\_architecture](#input\_cpu\_architecture) | The CPU architecture used to build this container. Must be one of `X86_64` or `ARM`. | `string` | `"X86_64"` | no |
 | <a name="input_image_tags_additional"></a> [image\_tags\_additional](#input\_image\_tags\_additional) | By default we tag the image with a hash of the code and tags that the container was built with; however, with this variable, you can specify additional strings to tag the image with. | `list(string)` | `[]` | no |
 | <a name="input_lambda_ephemeral_storage_mb"></a> [lambda\_ephemeral\_storage\_mb](#input\_lambda\_ephemeral\_storage\_mb) | The amount of ephemeral storage to provision the lambda function with. Used in the reformatting of the code base from a .zip to a .tar.gz. Usually this won't need to be changed from the default. | `number` | `512` | no |
-| <a name="input_operating_system_family"></a> [operating\_system\_family](#input\_operating\_system\_family) | The Operating System family to be used by ECS to build this container. Must be on of those listed [here](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#runtime-platform) for Fargate. | `string` | `"LINUX"` | no |
+| <a name="input_operating_system_family"></a> [operating\_system\_family](#input\_operating\_system\_family) | The Operating System family to be used by ECS to build this container. Must be one of those listed [here](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#runtime-platform) for Fargate. | `string` | `"LINUX"` | no |
 | <a name="input_random_suffix"></a> [random\_suffix](#input\_random\_suffix) | This appends a random suffix to the resources created by this module. Defaults to true to maintain the ability to apply multiple times in an account. | `bool` | `true` | no |
 | <a name="input_resource_name"></a> [resource\_name](#input\_resource\_name) | What to name resources deployed by this module. Works in conjunction with `var.random_suffix` bool. | `string` | `"app"` | no |
 | <a name="input_subnet_id"></a> [subnet\_id](#input\_subnet\_id) | The subnet id where the container will be built by ECS. | `string` | n/a | yes |
