@@ -247,7 +247,7 @@ resource "aws_ecs_task_definition" "main" {
   container_definitions = jsonencode([
     {
       name   = "kaniko"
-      image  = "gcr.io/kaniko-project/executor:latest"
+      image  = "gcr.io/kaniko-project/executor:v1.24.0@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698"
       cpu    = 4096  # Provisioning this gratuitously but open to making these 
       memory = 16384 # vars if our Windows friends need it
       logConfiguration = {
